@@ -128,6 +128,9 @@ linctl issue get LIN-123
 # Create a new issue
 linctl issue create --title "Bug fix" --team ENG
 
+# Create a sub-issue under an existing issue
+linctl issue create --title "Implement user authentication" --team ENG --parent-issue LIN-456
+
 # Assign issue to yourself
 linctl issue assign LIN-123
 
@@ -249,6 +252,7 @@ linctl issue new [flags]      # Alias
   -t, --team string        Team key (required)
   --priority int       Priority 0-4 (default 3)
   -m, --assign-me          Assign to yourself
+  --parent-issue string    Parent issue ID/identifier
 
 # Assign issue to yourself
 linctl issue assign <issue-id>
