@@ -148,6 +148,11 @@ type Users struct {
 	PageInfo PageInfo `json:"pageInfo"`
 }
 
+type Cycles struct {
+	Nodes    []Cycle  `json:"nodes"`
+	PageInfo PageInfo `json:"pageInfo"`
+}
+
 type Labels struct {
 	Nodes []Label `json:"nodes"`
 }
@@ -1124,6 +1129,11 @@ func (c *Client) UpdateIssue(ctx context.Context, id string, input map[string]in
 						identifier
 						title
 					}
+					cycle {
+						id
+						number
+						name
+					}
 				}
 			}
 		}
@@ -1185,6 +1195,11 @@ func (c *Client) CreateIssue(ctx context.Context, input map[string]interface{}) 
 							name
 							color
 						}
+					}
+					cycle {
+						id
+						number
+						name
 					}
 				}
 			}
@@ -1423,6 +1438,71 @@ func (c *Client) GetUser(ctx context.Context, email string) (*User, error) {
 	}
 
 	return &response.User, nil
+}
+
+// GetTeamCycles returns cycles for a specific team
+func (c *Client) GetTeamCycles(ctx context.Context, teamKey string, first int, filter map[string]interface{}) (*Cycles, error) {
+	query := `
+		query TeamCycles($teamKey: String!, $first: Int, $filter: CycleFilter) {
+			team(id: $teamKey) {
+				cycles(first: $first, filter: $filter) {
+					nodes {
+						id
+						number
+						name
+						description
+						startsAt
+						endsAt
+						progress
+						completedAt
+					}
+					pageInfo {
+						hasNextPage
+						endCursor
+					}
+				}
+			}
+		}
+	`
+
+	variables := map[string]interface{}{
+		"teamKey": teamKey,
+		"first":   first,
+	}
+	if filter != nil {
+		variables["filter"] = filter
+	}
+
+	var response struct {
+		Team struct {
+			Cycles Cycles `json:"cycles"`
+		} `json:"team"`
+	}
+
+	err := c.Execute(ctx, query, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return &response.Team.Cycles, nil
+}
+
+// GetCycleByNumber returns a specific cycle by number within a team
+func (c *Client) GetCycleByNumber(ctx context.Context, teamKey string, cycleNumber int) (*Cycle, error) {
+	// Get cycles for the team (get a reasonable amount to search through)
+	cycles, err := c.GetTeamCycles(ctx, teamKey, 100, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// Search for the cycle with the matching number
+	for _, cycle := range cycles.Nodes {
+		if cycle.Number == cycleNumber {
+			return &cycle, nil
+		}
+	}
+
+	return nil, nil
 }
 
 // GetIssueComments returns comments for a specific issue

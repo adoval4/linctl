@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/dorkitude/linctl/pkg/api"
@@ -778,6 +779,34 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+// resolveCycleID resolves a cycle string (number or special value) to a cycle ID
+// Returns nil if the cycle should be unassigned
+func resolveCycleID(ctx context.Context, client *api.Client, teamKey string, cycleStr string, plaintext bool, jsonOut bool) (*string, error) {
+	// Handle special unassignment values
+	switch strings.ToLower(strings.TrimSpace(cycleStr)) {
+	case "unassigned", "none", "":
+		return nil, nil
+	}
+
+	// Parse as cycle number
+	cycleNumber, err := strconv.Atoi(cycleStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid cycle value: %s. Expected a cycle number (e.g., '5') or 'unassigned'", cycleStr)
+	}
+
+	// Get the cycle by number
+	cycle, err := client.GetCycleByNumber(ctx, teamKey, cycleNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find cycle #%d: %v", cycleNumber, err)
+	}
+
+	if cycle == nil {
+		return nil, fmt.Errorf("cycle #%d not found for team %s", cycleNumber, teamKey)
+	}
+
+	return &cycle.ID, nil
+}
+
 var issueAssignCmd = &cobra.Command{
 	Use:   "assign [issue-id]",
 	Short: "Assign issue to yourself",
@@ -888,6 +917,21 @@ var issueCreateCmd = &cobra.Command{
 				os.Exit(1)
 			}
 			input["assigneeId"] = viewer.ID
+		}
+
+		// Handle cycle assignment
+		if cmd.Flags().Changed("cycle") {
+			cycleStr, _ := cmd.Flags().GetString("cycle")
+			cycleID, err := resolveCycleID(context.Background(), client, team.Key, cycleStr, plaintext, jsonOut)
+			if err != nil {
+				output.Error(err.Error(), plaintext, jsonOut)
+				os.Exit(1)
+			}
+			if cycleID != nil {
+				input["cycleId"] = *cycleID
+			} else {
+				input["cycleId"] = nil
+			}
 		}
 
 		// Create issue
@@ -1074,6 +1118,29 @@ Examples:
 			}
 		}
 
+		// Handle cycle update
+		if cmd.Flags().Changed("cycle") {
+			cycleStr, _ := cmd.Flags().GetString("cycle")
+
+			// Get the issue first to determine the team
+			issue, err := client.GetIssue(context.Background(), args[0])
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to get issue: %v", err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+
+			cycleID, err := resolveCycleID(context.Background(), client, issue.Team.Key, cycleStr, plaintext, jsonOut)
+			if err != nil {
+				output.Error(err.Error(), plaintext, jsonOut)
+				os.Exit(1)
+			}
+			if cycleID != nil {
+				input["cycleId"] = *cycleID
+			} else {
+				input["cycleId"] = nil
+			}
+		}
+
 		// Check if any updates were specified
 		if len(input) == 0 {
 			output.Error("No updates specified. Use flags to specify what to update.", plaintext, jsonOut)
@@ -1133,6 +1200,7 @@ func init() {
 	issueCreateCmd.Flags().StringP("team", "t", "", "Team key (required)")
 	issueCreateCmd.Flags().Int("priority", 3, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueCreateCmd.Flags().BoolP("assign-me", "m", false, "Assign to yourself")
+	issueCreateCmd.Flags().String("cycle", "", "Cycle number to assign (e.g., '5', or 'unassigned' to remove)")
 	_ = issueCreateCmd.MarkFlagRequired("title")
 	_ = issueCreateCmd.MarkFlagRequired("team")
 
@@ -1144,4 +1212,5 @@ func init() {
 	issueUpdateCmd.Flags().Int("priority", -1, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueUpdateCmd.Flags().String("due-date", "", "Due date (YYYY-MM-DD format, or empty to remove)")
 	issueUpdateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier (or 'unassigned' to remove parent)")
+	issueUpdateCmd.Flags().String("cycle", "", "Cycle number to assign (e.g., '5', or 'unassigned' to remove)")
 }
