@@ -1518,3 +1518,69 @@ func (c *Client) CreateComment(ctx context.Context, issueID string, body string)
 
 	return &response.CommentCreate.Comment, nil
 }
+
+// GetTeamLabels fetches all labels for a specific team
+func (c *Client) GetTeamLabels(ctx context.Context, teamKey string) ([]Label, error) {
+	query := `
+		query TeamLabels($key: String!) {
+			team(id: $key) {
+				labels {
+					nodes {
+						id
+						name
+						color
+						description
+					}
+				}
+			}
+		}
+	`
+
+	variables := map[string]interface{}{
+		"key": teamKey,
+	}
+
+	var response struct {
+		Team struct {
+			Labels Labels `json:"labels"`
+		} `json:"team"`
+	}
+
+	err := c.Execute(ctx, query, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.Team.Labels.Nodes, nil
+}
+
+// GetOrganizationLabels fetches all organization-wide labels
+func (c *Client) GetOrganizationLabels(ctx context.Context) ([]Label, error) {
+	query := `
+		query OrganizationLabels {
+			organization {
+				labels {
+					nodes {
+						id
+						name
+						color
+						description
+					}
+				}
+			}
+		}
+	`
+
+	var response struct {
+		Organization struct {
+			Labels Labels `json:"labels"`
+		} `json:"organization"`
+	}
+
+	err := c.Execute(ctx, query, nil, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.Organization.Labels.Nodes, nil
+}
