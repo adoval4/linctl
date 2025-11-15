@@ -28,7 +28,8 @@ Examples:
   linctl issue list --newer-than 3_weeks_ago  # Show issues from last 3 weeks
   linctl issue search "login bug" --team ENG
   linctl issue get LIN-123
-  linctl issue create --title "Bug fix" --team ENG`,
+  linctl issue create --title "Bug fix" --team ENG
+  linctl issue create --title "Feature" --team ENG --estimate 3`,
 }
 
 var issueListCmd = &cobra.Command{
@@ -849,6 +850,7 @@ var issueCreateCmd = &cobra.Command{
 		teamKey, _ := cmd.Flags().GetString("team")
 		priority, _ := cmd.Flags().GetInt("priority")
 		assignToMe, _ := cmd.Flags().GetBool("assign-me")
+		estimate, _ := cmd.Flags().GetFloat64("estimate")
 
 		if title == "" {
 			output.Error("Title is required (--title)", plaintext, jsonOut)
@@ -890,6 +892,11 @@ var issueCreateCmd = &cobra.Command{
 			input["assigneeId"] = viewer.ID
 		}
 
+		// Handle estimate
+		if estimate >= 0 && estimate != 0 {
+			input["estimate"] = estimate
+		}
+
 		// Create issue
 		issue, err := client.CreateIssue(context.Background(), input)
 		if err != nil {
@@ -927,6 +934,8 @@ Examples:
   linctl issue update LIN-123 --due-date "2024-12-31"
   linctl issue update LIN-123 --parent-issue LIN-456
   linctl issue update LIN-123 --parent-issue unassigned
+  linctl issue update LIN-123 --estimate 5
+  linctl issue update LIN-123 --estimate 0  # Clear estimate
   linctl issue update LIN-123 --title "New title" --assignee me --priority 2`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -1074,6 +1083,17 @@ Examples:
 			}
 		}
 
+		// Handle estimate update
+		if cmd.Flags().Changed("estimate") {
+			estimate, _ := cmd.Flags().GetFloat64("estimate")
+			if estimate == 0 {
+				// Setting to 0 means clear the estimate
+				input["estimate"] = nil
+			} else {
+				input["estimate"] = estimate
+			}
+		}
+
 		// Check if any updates were specified
 		if len(input) == 0 {
 			output.Error("No updates specified. Use flags to specify what to update.", plaintext, jsonOut)
@@ -1133,6 +1153,7 @@ func init() {
 	issueCreateCmd.Flags().StringP("team", "t", "", "Team key (required)")
 	issueCreateCmd.Flags().Int("priority", 3, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueCreateCmd.Flags().BoolP("assign-me", "m", false, "Assign to yourself")
+	issueCreateCmd.Flags().Float64("estimate", -1, "Estimate (story points/hours, use 0 to leave unset)")
 	_ = issueCreateCmd.MarkFlagRequired("title")
 	_ = issueCreateCmd.MarkFlagRequired("team")
 
@@ -1144,4 +1165,5 @@ func init() {
 	issueUpdateCmd.Flags().Int("priority", -1, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueUpdateCmd.Flags().String("due-date", "", "Due date (YYYY-MM-DD format, or empty to remove)")
 	issueUpdateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier (or 'unassigned' to remove parent)")
+	issueUpdateCmd.Flags().Float64("estimate", -1, "Estimate (story points/hours, use 0 to clear)")
 }
