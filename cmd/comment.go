@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/dorkitude/linctl/pkg/api"
 	"github.com/dorkitude/linctl/pkg/auth"
+	"github.com/dorkitude/linctl/pkg/files"
 	"github.com/dorkitude/linctl/pkg/output"
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -143,9 +145,34 @@ var commentCreateCmd = &cobra.Command{
 
 		// Get comment body
 		body, _ := cmd.Flags().GetString("body")
-		if body == "" {
-			output.Error("Comment body is required (--body)", plaintext, jsonOut)
+		imagePaths, _ := cmd.Flags().GetStringArray("image")
+
+		if body == "" && len(imagePaths) == 0 {
+			output.Error("Comment body or at least one image is required (--body or --image)", plaintext, jsonOut)
 			os.Exit(1)
+		}
+
+		// Upload images if provided
+		if len(imagePaths) > 0 {
+			if !jsonOut && !plaintext {
+				fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+			}
+
+			for _, imagePath := range imagePaths {
+				assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+				if err != nil {
+					output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+					os.Exit(1)
+				}
+
+				// Inject image into body
+				altText := filepath.Base(imagePath)
+				body = files.InjectImageIntoMarkdown(body, assetURL, altText)
+
+				if !jsonOut && !plaintext {
+					fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+				}
+			}
 		}
 
 		// Create comment
@@ -220,6 +247,6 @@ func init() {
 	commentListCmd.Flags().StringP("sort", "o", "linear", "Sort order: linear (default), created, updated")
 
 	// Create command flags
-	commentCreateCmd.Flags().StringP("body", "b", "", "Comment body (required)")
-	_ = commentCreateCmd.MarkFlagRequired("body")
+	commentCreateCmd.Flags().StringP("body", "b", "", "Comment body")
+	commentCreateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 }
