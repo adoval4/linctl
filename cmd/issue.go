@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/dorkitude/linctl/pkg/api"
 	"github.com/dorkitude/linctl/pkg/auth"
+	"github.com/dorkitude/linctl/pkg/files"
 	"github.com/dorkitude/linctl/pkg/output"
 	"github.com/dorkitude/linctl/pkg/utils"
 	"github.com/fatih/color"
@@ -807,6 +809,92 @@ func resolveCycleID(ctx context.Context, client *api.Client, teamKey string, cyc
 	return &cycle.ID, nil
 }
 
+// resolveLabelIDs takes comma-separated label names and returns their IDs
+// Searches team labels first, then organization labels
+func resolveLabelIDs(ctx context.Context, client *api.Client, teamKey string, labelNames string) ([]string, error) {
+	// Parse comma-separated input and trim whitespace
+	names := strings.Split(labelNames, ",")
+	var trimmedNames []string
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed != "" {
+			trimmedNames = append(trimmedNames, trimmed)
+		}
+	}
+
+	if len(trimmedNames) == 0 {
+		return []string{}, nil
+	}
+
+	// Query team labels
+	teamLabels, err := client.GetTeamLabels(ctx, teamKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch team labels: %w", err)
+	}
+
+	// Create map for quick lookup (case-insensitive)
+	labelMap := make(map[string]string) // lowercase name -> ID
+	for _, label := range teamLabels {
+		labelMap[strings.ToLower(label.Name)] = label.ID
+	}
+
+	// Resolve label IDs
+	var labelIDs []string
+	var unmatched []string
+
+	for _, name := range trimmedNames {
+		lowerName := strings.ToLower(name)
+		if id, found := labelMap[lowerName]; found {
+			labelIDs = append(labelIDs, id)
+		} else {
+			unmatched = append(unmatched, name)
+		}
+	}
+
+	// If there are unmatched labels, try organization labels
+	if len(unmatched) > 0 {
+		orgLabels, err := client.GetOrganizationLabels(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch organization labels: %w", err)
+		}
+
+		// Create map for org labels
+		orgLabelMap := make(map[string]string)
+		for _, label := range orgLabels {
+			orgLabelMap[strings.ToLower(label.Name)] = label.ID
+		}
+
+		// Try to match unmatched labels
+		var stillUnmatched []string
+		for _, name := range unmatched {
+			lowerName := strings.ToLower(name)
+			if id, found := orgLabelMap[lowerName]; found {
+				labelIDs = append(labelIDs, id)
+			} else {
+				stillUnmatched = append(stillUnmatched, name)
+			}
+		}
+
+		// If any labels still unmatched, return error with helpful message
+		if len(stillUnmatched) > 0 {
+			// Collect all available label names for error message
+			var availableLabels []string
+			for _, label := range teamLabels {
+				availableLabels = append(availableLabels, label.Name)
+			}
+			for _, label := range orgLabels {
+				availableLabels = append(availableLabels, label.Name)
+			}
+
+			return nil, fmt.Errorf("label(s) not found: %s\nAvailable labels: %s",
+				strings.Join(stillUnmatched, ", "),
+				strings.Join(availableLabels, ", "))
+		}
+	}
+
+	return labelIDs, nil
+}
+
 var issueAssignCmd = &cobra.Command{
 	Use:   "assign [issue-id]",
 	Short: "Assign issue to yourself",
@@ -878,6 +966,8 @@ var issueCreateCmd = &cobra.Command{
 		teamKey, _ := cmd.Flags().GetString("team")
 		priority, _ := cmd.Flags().GetInt("priority")
 		assignToMe, _ := cmd.Flags().GetBool("assign-me")
+		estimate, _ := cmd.Flags().GetInt("estimate")
+		imagePaths, _ := cmd.Flags().GetStringArray("image")
 
 		if title == "" {
 			output.Error("Title is required (--title)", plaintext, jsonOut)
@@ -896,7 +986,30 @@ var issueCreateCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Build input
+
+	// Upload images if provided
+	if len(imagePaths) > 0 {
+		if !jsonOut && !plaintext {
+			fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+		}
+
+		for _, imagePath := range imagePaths {
+			assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+
+			// Inject image into description
+			altText := filepath.Base(imagePath)
+			description = files.InjectImageIntoMarkdown(description, assetURL, altText)
+
+			if !jsonOut && !plaintext {
+				fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+			}
+		}
+	}
+	// Build input
 		input := map[string]interface{}{
 			"title":  title,
 			"teamId": team.ID,
@@ -932,6 +1045,39 @@ var issueCreateCmd = &cobra.Command{
 			} else {
 				input["cycleId"] = nil
 			}
+		}
+
+		// Handle labels if provided
+		if cmd.Flags().Changed("labels") {
+			labelsStr, _ := cmd.Flags().GetString("labels")
+			if labelsStr != "" {
+				labelIDs, err := resolveLabelIDs(context.Background(), client, teamKey, labelsStr)
+				if err != nil {
+					output.Error(fmt.Sprintf("Failed to resolve labels: %v", err), plaintext, jsonOut)
+					os.Exit(1)
+				}
+				input["labelIds"] = labelIDs
+			}
+		}
+
+		// Handle parent issue (if specified)
+		if cmd.Flags().Changed("parent-issue") {
+			parentIssue, _ := cmd.Flags().GetString("parent-issue")
+			if parentIssue != "" {
+				// Validate parent issue exists and get its UUID
+				parentIssueDetails, err := client.GetIssue(context.Background(), parentIssue)
+				if err != nil {
+					output.Error(fmt.Sprintf("Parent issue not found: %s", parentIssue), plaintext, jsonOut)
+					os.Exit(1)
+				}
+				// Use the UUID instead of the identifier
+				input["parentId"] = parentIssueDetails.ID
+			}
+		}
+
+		// Handle estimate
+		if estimate >= 0 && estimate != 0 {
+			input["estimate"] = estimate
 		}
 
 		// Create issue
@@ -1028,6 +1174,40 @@ Examples:
 						foundUser = &user
 						break
 					}
+
+	// Handle image uploads
+	imagePaths, _ := cmd.Flags().GetStringArray("image")
+	description := ""
+	if cmd.Flags().Changed("description") {
+		description, _ = cmd.Flags().GetString("description")
+	}
+
+	if len(imagePaths) > 0 {
+		if !jsonOut && !plaintext {
+			fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+		}
+
+		for _, imagePath := range imagePaths {
+			assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+
+			// Inject image into description
+			altText := filepath.Base(imagePath)
+			description = files.InjectImageIntoMarkdown(description, assetURL, altText)
+
+			if !jsonOut && !plaintext {
+				fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+			}
+		}
+	}
+
+	// Set description if it was changed or if images were uploaded
+	if cmd.Flags().Changed("description") || len(imagePaths) > 0 {
+		input["description"] = description
+	}
 				}
 
 				if foundUser == nil {
@@ -1118,17 +1298,18 @@ Examples:
 			}
 		}
 
+	// Handle cycle update or labels update - both need team info
+	if cmd.Flags().Changed("cycle") || cmd.Flags().Changed("labels") {
+		// Get the issue first to determine the team
+		issue, err := client.GetIssue(context.Background(), args[0])
+		if err != nil {
+			output.Error(fmt.Sprintf("Failed to get issue: %v", err), plaintext, jsonOut)
+			os.Exit(1)
+		}
+
 		// Handle cycle update
 		if cmd.Flags().Changed("cycle") {
 			cycleStr, _ := cmd.Flags().GetString("cycle")
-
-			// Get the issue first to determine the team
-			issue, err := client.GetIssue(context.Background(), args[0])
-			if err != nil {
-				output.Error(fmt.Sprintf("Failed to get issue: %v", err), plaintext, jsonOut)
-				os.Exit(1)
-			}
-
 			cycleID, err := resolveCycleID(context.Background(), client, issue.Team.Key, cycleStr, plaintext, jsonOut)
 			if err != nil {
 				output.Error(err.Error(), plaintext, jsonOut)
@@ -1140,6 +1321,35 @@ Examples:
 				input["cycleId"] = nil
 			}
 		}
+
+		// Handle labels update
+		if cmd.Flags().Changed("labels") {
+			labelsStr, _ := cmd.Flags().GetString("labels")
+			if labelsStr == "" {
+				// Empty string means remove all labels
+				input["labelIds"] = []string{}
+			} else {
+				labelIDs, err := resolveLabelIDs(context.Background(), client, issue.Team.Key, labelsStr)
+				if err != nil {
+					output.Error(fmt.Sprintf("Failed to resolve labels: %v", err), plaintext, jsonOut)
+					os.Exit(1)
+				}
+				input["labelIds"] = labelIDs
+			}
+		}
+	}
+
+	// Handle estimate update
+	if cmd.Flags().Changed("estimate") {
+		estimate, _ := cmd.Flags().GetInt("estimate")
+		if estimate == 0 {
+			// Setting to 0 means clear the estimate
+			input["estimate"] = nil
+		} else {
+			input["estimate"] = estimate
+		}
+	}
+
 
 		// Check if any updates were specified
 		if len(input) == 0 {
@@ -1201,6 +1411,10 @@ func init() {
 	issueCreateCmd.Flags().Int("priority", 3, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueCreateCmd.Flags().BoolP("assign-me", "m", false, "Assign to yourself")
 	issueCreateCmd.Flags().String("cycle", "", "Cycle number to assign (e.g., '5', or 'unassigned' to remove)")
+	issueCreateCmd.Flags().String("labels", "", "Comma-separated label names (e.g., \"Bug,High Priority,Backend\")")
+	issueCreateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier")
+	issueCreateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to leave unset)")
+	issueCreateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 	_ = issueCreateCmd.MarkFlagRequired("title")
 	_ = issueCreateCmd.MarkFlagRequired("team")
 
@@ -1213,4 +1427,7 @@ func init() {
 	issueUpdateCmd.Flags().String("due-date", "", "Due date (YYYY-MM-DD format, or empty to remove)")
 	issueUpdateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier (or 'unassigned' to remove parent)")
 	issueUpdateCmd.Flags().String("cycle", "", "Cycle number to assign (e.g., '5', or 'unassigned' to remove)")
+	issueUpdateCmd.Flags().String("labels", "", "Comma-separated label names (replaces existing labels, use empty string to remove all)")
+	issueUpdateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to clear)")
+	issueUpdateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 }

@@ -1201,6 +1201,11 @@ func (c *Client) CreateIssue(ctx context.Context, input map[string]interface{}) 
 						number
 						name
 					}
+					parent {
+						id
+						identifier
+						title
+					}
 				}
 			}
 		}
@@ -1597,4 +1602,128 @@ func (c *Client) CreateComment(ctx context.Context, issueID string, body string)
 	}
 
 	return &response.CommentCreate.Comment, nil
+}
+
+// UploadFileHeader represents a header for file upload
+type UploadFileHeader struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// UploadFile represents the response from fileUpload mutation
+type UploadFile struct {
+	UploadURL   string             `json:"uploadUrl"`
+	AssetURL    string             `json:"assetUrl"`
+	Headers     []UploadFileHeader `json:"headers"`
+	ContentType string             `json:"contentType"`
+	Filename    string             `json:"filename"`
+	Size        int                `json:"size"`
+}
+
+// FileUpload requests a pre-signed URL for uploading a file to Linear
+func (c *Client) FileUpload(ctx context.Context, filename string, size int, contentType string) (*UploadFile, error) {
+	query := `
+		mutation FileUpload($filename: String!, $size: Int!, $contentType: String!) {
+			fileUpload(filename: $filename, size: $size, contentType: $contentType) {
+				success
+				uploadFile {
+					uploadUrl
+					assetUrl
+					headers {
+						key
+						value
+					}
+					contentType
+					filename
+					size
+				}
+			}
+		}
+	`
+
+	variables := map[string]interface{}{
+		"filename":    filename,
+		"size":        size,
+		"contentType": contentType,
+	}
+
+	var response struct {
+		FileUpload struct {
+			Success    bool       `json:"success"`
+			UploadFile UploadFile `json:"uploadFile"`
+		} `json:"fileUpload"`
+	}
+
+	err := c.Execute(ctx, query, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return &response.FileUpload.UploadFile, nil
+}
+
+// GetTeamLabels fetches all labels for a specific team
+func (c *Client) GetTeamLabels(ctx context.Context, teamKey string) ([]Label, error) {
+	query := `
+		query TeamLabels($key: String!) {
+			team(id: $key) {
+				labels {
+					nodes {
+						id
+						name
+						color
+						description
+					}
+				}
+			}
+		}
+	`
+
+	variables := map[string]interface{}{
+		"key": teamKey,
+	}
+
+	var response struct {
+		Team struct {
+			Labels Labels `json:"labels"`
+		} `json:"team"`
+	}
+
+	err := c.Execute(ctx, query, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.Team.Labels.Nodes, nil
+}
+
+// GetOrganizationLabels fetches all organization-wide labels
+func (c *Client) GetOrganizationLabels(ctx context.Context) ([]Label, error) {
+	query := `
+		query OrganizationLabels {
+			organization {
+				labels {
+					nodes {
+						id
+						name
+						color
+						description
+					}
+				}
+			}
+		}
+	`
+
+	var response struct {
+		Organization struct {
+			Labels Labels `json:"labels"`
+		} `json:"organization"`
+	}
+
+	err := c.Execute(ctx, query, nil, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return response.Organization.Labels.Nodes, nil
 }

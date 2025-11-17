@@ -13,6 +13,8 @@ A comprehensive command-line interface for Linear's API, built with agents in mi
   - Attachments and recent comments preview
   - Due dates, snoozed status, and completion tracking
   - Full-text search via `linctl issue search`
+  - **Image upload** when creating/updating issues
+  - **Image download** from issue descriptions
 - 👥 **Team Management**: View teams, get team details, and list team members
 - 🚀 **Project Tracking**: Comprehensive project information
   - Progress visualization with issue statistics
@@ -22,6 +24,7 @@ A comprehensive command-line interface for Linear's API, built with agents in mi
   - Timeline tracking (created, updated, completed dates)
 - 👤 **User Management**: List all users, view user details, and current user info
 - 💬 **Comments**: List and create comments on issues with time-aware formatting
+  - **Image upload** support for comments
 - 📎 **Attachments**: View file uploads and attachments on issues
 - 🔗 **Webhooks**: Configure and manage webhooks
 - 🎨 **Multiple Output Formats**: Table, plaintext, and JSON output
@@ -128,6 +131,9 @@ linctl issue get LIN-123
 # Create a new issue
 linctl issue create --title "Bug fix" --team ENG
 
+# Create a sub-issue under an existing issue
+linctl issue create --title "Implement user authentication" --team ENG --parent-issue LIN-456
+
 # Assign issue to yourself
 linctl issue assign LIN-123
 
@@ -147,6 +153,22 @@ linctl issue update LIN-123 --parent-issue unassigned  # Remove parent
 # Update multiple fields at once
 linctl issue update LIN-123 --title "Critical Bug" --assignee me --priority 1
 linctl issue update LIN-123 --parent-issue LIN-456 --title "Sub-task" --assignee me
+
+# Image upload and download
+# Create issue with images
+linctl issue create --title "Bug with screenshot" --team ENG --image screenshot.png --image error.jpg
+
+# Update issue description with images
+linctl issue update LIN-123 --description "See attached screenshots" --image bug1.png --image bug2.png
+
+# Add multiple images to issue (appended to existing description)
+linctl issue update LIN-123 --image diagram.png --image flowchart.png
+
+# Download all images from an issue
+linctl issue download-images LIN-123
+
+# Download to custom directory
+linctl issue download-images LIN-123 --output-dir ./issue-images
 ```
 
 ### 3. Project Management
@@ -201,6 +223,12 @@ linctl comment list LIN-123
 
 # Add a comment to an issue
 linctl comment create LIN-123 --body "Fixed the authentication bug"
+
+# Add a comment with images
+linctl comment create LIN-123 --body "Here's the fix" --image screenshot.png --image test-result.jpg
+
+# Add images only (no text body)
+linctl comment create LIN-123 --image diagram.png
 ```
 
 ## 📖 Command Reference
@@ -249,6 +277,7 @@ linctl issue new [flags]      # Alias
   -t, --team string        Team key (required)
   --priority int       Priority 0-4 (default 3)
   -m, --assign-me          Assign to yourself
+  --parent-issue string    Parent issue ID/identifier
 
 # Assign issue to yourself
 linctl issue assign <issue-id>
