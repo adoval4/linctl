@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/dorkitude/linctl/pkg/api"
 	"github.com/dorkitude/linctl/pkg/auth"
+	"github.com/dorkitude/linctl/pkg/files"
 	"github.com/dorkitude/linctl/pkg/output"
 	"github.com/dorkitude/linctl/pkg/utils"
 	"github.com/fatih/color"
@@ -935,6 +937,8 @@ var issueCreateCmd = &cobra.Command{
 		teamKey, _ := cmd.Flags().GetString("team")
 		priority, _ := cmd.Flags().GetInt("priority")
 		assignToMe, _ := cmd.Flags().GetBool("assign-me")
+		estimate, _ := cmd.Flags().GetInt("estimate")
+		imagePaths, _ := cmd.Flags().GetStringArray("image")
 
 		if title == "" {
 			output.Error("Title is required (--title)", plaintext, jsonOut)
@@ -953,7 +957,30 @@ var issueCreateCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Build input
+
+	// Upload images if provided
+	if len(imagePaths) > 0 {
+		if !jsonOut && !plaintext {
+			fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+		}
+
+		for _, imagePath := range imagePaths {
+			assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+
+			// Inject image into description
+			altText := filepath.Base(imagePath)
+			description = files.InjectImageIntoMarkdown(description, assetURL, altText)
+
+			if !jsonOut && !plaintext {
+				fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+			}
+		}
+	}
+	// Build input
 		input := map[string]interface{}{
 			"title":  title,
 			"teamId": team.ID,
@@ -989,6 +1016,26 @@ var issueCreateCmd = &cobra.Command{
 			}
 		}
 
+
+	// Handle parent issue (if specified)
+	if cmd.Flags().Changed("parent-issue") {
+		parentIssue, _ := cmd.Flags().GetString("parent-issue")
+		if parentIssue != "" {
+			// Validate parent issue exists and get its UUID
+			parentIssueDetails, err := client.GetIssue(context.Background(), parentIssue)
+			if err != nil {
+				output.Error(fmt.Sprintf("Parent issue not found: %s", parentIssue), plaintext, jsonOut)
+				os.Exit(1)
+			}
+			// Use the UUID instead of the identifier
+			input["parentId"] = parentIssueDetails.ID
+		}
+	}
+
+	// Handle estimate
+	if estimate >= 0 && estimate != 0 {
+		input["estimate"] = estimate
+	}
 		// Create issue
 		issue, err := client.CreateIssue(context.Background(), input)
 		if err != nil {
@@ -1083,6 +1130,40 @@ Examples:
 						foundUser = &user
 						break
 					}
+
+	// Handle image uploads
+	imagePaths, _ := cmd.Flags().GetStringArray("image")
+	description := ""
+	if cmd.Flags().Changed("description") {
+		description, _ = cmd.Flags().GetString("description")
+	}
+
+	if len(imagePaths) > 0 {
+		if !jsonOut && !plaintext {
+			fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+		}
+
+		for _, imagePath := range imagePaths {
+			assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+
+			// Inject image into description
+			altText := filepath.Base(imagePath)
+			description = files.InjectImageIntoMarkdown(description, assetURL, altText)
+
+			if !jsonOut && !plaintext {
+				fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+			}
+		}
+	}
+
+	// Set description if it was changed or if images were uploaded
+	if cmd.Flags().Changed("description") || len(imagePaths) > 0 {
+		input["description"] = description
+	}
 				}
 
 				if foundUser == nil {
@@ -1197,6 +1278,17 @@ Examples:
 			}
 		}
 
+
+	// Handle estimate update
+	if cmd.Flags().Changed("estimate") {
+		estimate, _ := cmd.Flags().GetInt("estimate")
+		if estimate == 0 {
+			// Setting to 0 means clear the estimate
+			input["estimate"] = nil
+		} else {
+			input["estimate"] = estimate
+		}
+	}
 		// Check if any updates were specified
 		if len(input) == 0 {
 			output.Error("No updates specified. Use flags to specify what to update.", plaintext, jsonOut)
@@ -1257,6 +1349,9 @@ func init() {
 	issueCreateCmd.Flags().Int("priority", 3, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueCreateCmd.Flags().BoolP("assign-me", "m", false, "Assign to yourself")
 	issueCreateCmd.Flags().String("labels", "", "Comma-separated label names (e.g., \"Bug,High Priority,Backend\")")
+	issueCreateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier")
+	issueCreateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to leave unset)")
+	issueCreateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 	_ = issueCreateCmd.MarkFlagRequired("title")
 	_ = issueCreateCmd.MarkFlagRequired("team")
 
@@ -1269,4 +1364,6 @@ func init() {
 	issueUpdateCmd.Flags().String("due-date", "", "Due date (YYYY-MM-DD format, or empty to remove)")
 	issueUpdateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier (or 'unassigned' to remove parent)")
 	issueUpdateCmd.Flags().String("labels", "", "Comma-separated label names (replaces existing labels, use empty string to remove all)")
+	issueUpdateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to clear)")
+	issueUpdateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 }

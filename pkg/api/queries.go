@@ -1186,6 +1186,11 @@ func (c *Client) CreateIssue(ctx context.Context, input map[string]interface{}) 
 							color
 						}
 					}
+					parent {
+						id
+						identifier
+						title
+					}
 				}
 			}
 		}
@@ -1517,6 +1522,64 @@ func (c *Client) CreateComment(ctx context.Context, issueID string, body string)
 	}
 
 	return &response.CommentCreate.Comment, nil
+}
+
+// UploadFileHeader represents a header for file upload
+type UploadFileHeader struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// UploadFile represents the response from fileUpload mutation
+type UploadFile struct {
+	UploadURL   string             `json:"uploadUrl"`
+	AssetURL    string             `json:"assetUrl"`
+	Headers     []UploadFileHeader `json:"headers"`
+	ContentType string             `json:"contentType"`
+	Filename    string             `json:"filename"`
+	Size        int                `json:"size"`
+}
+
+// FileUpload requests a pre-signed URL for uploading a file to Linear
+func (c *Client) FileUpload(ctx context.Context, filename string, size int, contentType string) (*UploadFile, error) {
+	query := `
+		mutation FileUpload($filename: String!, $size: Int!, $contentType: String!) {
+			fileUpload(filename: $filename, size: $size, contentType: $contentType) {
+				success
+				uploadFile {
+					uploadUrl
+					assetUrl
+					headers {
+						key
+						value
+					}
+					contentType
+					filename
+					size
+				}
+			}
+		}
+	`
+
+	variables := map[string]interface{}{
+		"filename":    filename,
+		"size":        size,
+		"contentType": contentType,
+	}
+
+	var response struct {
+		FileUpload struct {
+			Success    bool       `json:"success"`
+			UploadFile UploadFile `json:"uploadFile"`
+		} `json:"fileUpload"`
+	}
+
+	err := c.Execute(ctx, query, variables, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	return &response.FileUpload.UploadFile, nil
 }
 
 // GetTeamLabels fetches all labels for a specific team
