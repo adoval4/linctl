@@ -922,10 +922,25 @@ var issueCreateCmd = &cobra.Command{
 			input["assigneeId"] = viewer.ID
 		}
 
-		// Handle estimate
-		if estimate >= 0 && estimate != 0 {
-			input["estimate"] = estimate
+	// Handle parent issue (if specified)
+	if cmd.Flags().Changed("parent-issue") {
+		parentIssue, _ := cmd.Flags().GetString("parent-issue")
+		if parentIssue != "" {
+			// Validate parent issue exists and get its UUID
+			parentIssueDetails, err := client.GetIssue(context.Background(), parentIssue)
+			if err != nil {
+				output.Error(fmt.Sprintf("Parent issue not found: %s", parentIssue), plaintext, jsonOut)
+				os.Exit(1)
+			}
+			// Use the UUID instead of the identifier
+			input["parentId"] = parentIssueDetails.ID
 		}
+	}
+
+	// Handle estimate
+	if estimate >= 0 && estimate != 0 {
+		input["estimate"] = estimate
+	}
 
 		// Create issue
 		issue, err := client.CreateIssue(context.Background(), input)
@@ -945,6 +960,11 @@ var issueCreateCmd = &cobra.Command{
 				issue.Title)
 			if issue.Assignee != nil {
 				fmt.Printf("  Assigned to: %s\n", color.New(color.FgCyan).Sprint(issue.Assignee.Name))
+			}
+			if issue.Parent != nil {
+				fmt.Printf("  Parent issue: %s - %s\n",
+					color.New(color.FgCyan).Sprint(issue.Parent.Identifier),
+					issue.Parent.Title)
 			}
 		}
 	},
@@ -1318,6 +1338,7 @@ func init() {
 	issueCreateCmd.Flags().StringP("team", "t", "", "Team key (required)")
 	issueCreateCmd.Flags().Int("priority", 3, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueCreateCmd.Flags().BoolP("assign-me", "m", false, "Assign to yourself")
+	issueCreateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier")
 	issueCreateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to leave unset)")
 	issueCreateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 	_ = issueCreateCmd.MarkFlagRequired("title")

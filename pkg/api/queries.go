@@ -1186,6 +1186,11 @@ func (c *Client) CreateIssue(ctx context.Context, input map[string]interface{}) 
 							color
 						}
 					}
+					parent {
+						id
+						identifier
+						title
+					}
 				}
 			}
 		}
