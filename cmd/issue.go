@@ -30,8 +30,7 @@ Examples:
   linctl issue list --newer-than 3_weeks_ago  # Show issues from last 3 weeks
   linctl issue search "login bug" --team ENG
   linctl issue get LIN-123
-  linctl issue create --title "Bug fix" --team ENG
-  linctl issue create --title "Feature" --team ENG --estimate 3`,
+  linctl issue create --title "Bug fix" --team ENG`,
 }
 
 var issueListCmd = &cobra.Command{
@@ -596,10 +595,6 @@ var issueGetCmd = &cobra.Command{
 
 		fmt.Printf("Priority: %s\n", priorityToString(issue.Priority))
 
-		if issue.Estimate != nil {
-			fmt.Printf("Estimate: %.0f\n", *issue.Estimate)
-		}
-
 		// Show project and cycle info
 		if issue.Project != nil {
 			fmt.Printf("Project: %s (%s)\n",
@@ -785,6 +780,92 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+// resolveLabelIDs takes comma-separated label names and returns their IDs
+// Searches team labels first, then organization labels
+func resolveLabelIDs(ctx context.Context, client *api.Client, teamKey string, labelNames string) ([]string, error) {
+	// Parse comma-separated input and trim whitespace
+	names := strings.Split(labelNames, ",")
+	var trimmedNames []string
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed != "" {
+			trimmedNames = append(trimmedNames, trimmed)
+		}
+	}
+
+	if len(trimmedNames) == 0 {
+		return []string{}, nil
+	}
+
+	// Query team labels
+	teamLabels, err := client.GetTeamLabels(ctx, teamKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch team labels: %w", err)
+	}
+
+	// Create map for quick lookup (case-insensitive)
+	labelMap := make(map[string]string) // lowercase name -> ID
+	for _, label := range teamLabels {
+		labelMap[strings.ToLower(label.Name)] = label.ID
+	}
+
+	// Resolve label IDs
+	var labelIDs []string
+	var unmatched []string
+
+	for _, name := range trimmedNames {
+		lowerName := strings.ToLower(name)
+		if id, found := labelMap[lowerName]; found {
+			labelIDs = append(labelIDs, id)
+		} else {
+			unmatched = append(unmatched, name)
+		}
+	}
+
+	// If there are unmatched labels, try organization labels
+	if len(unmatched) > 0 {
+		orgLabels, err := client.GetOrganizationLabels(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch organization labels: %w", err)
+		}
+
+		// Create map for org labels
+		orgLabelMap := make(map[string]string)
+		for _, label := range orgLabels {
+			orgLabelMap[strings.ToLower(label.Name)] = label.ID
+		}
+
+		// Try to match unmatched labels
+		var stillUnmatched []string
+		for _, name := range unmatched {
+			lowerName := strings.ToLower(name)
+			if id, found := orgLabelMap[lowerName]; found {
+				labelIDs = append(labelIDs, id)
+			} else {
+				stillUnmatched = append(stillUnmatched, name)
+			}
+		}
+
+		// If any labels still unmatched, return error with helpful message
+		if len(stillUnmatched) > 0 {
+			// Collect all available label names for error message
+			var availableLabels []string
+			for _, label := range teamLabels {
+				availableLabels = append(availableLabels, label.Name)
+			}
+			for _, label := range orgLabels {
+				availableLabels = append(availableLabels, label.Name)
+			}
+
+			return nil, fmt.Errorf("label(s) not found: %s\nAvailable labels: %s",
+				strings.Join(stillUnmatched, ", "),
+				strings.Join(availableLabels, ", "))
+		}
+	}
+
+	return labelIDs, nil
+}
+
 var issueAssignCmd = &cobra.Command{
 	Use:   "assign [issue-id]",
 	Short: "Assign issue to yourself",
@@ -869,29 +950,6 @@ var issueCreateCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Upload images if provided
-		if len(imagePaths) > 0 {
-			if !jsonOut && !plaintext {
-				fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
-			}
-
-			for _, imagePath := range imagePaths {
-				assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
-				if err != nil {
-					output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
-					os.Exit(1)
-				}
-
-				// Inject image into description
-				altText := filepath.Base(imagePath)
-				description = files.InjectImageIntoMarkdown(description, assetURL, altText)
-
-				if !jsonOut && !plaintext {
-					fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
-				}
-			}
-		}
-
 		// Get team ID from key
 		team, err := client.GetTeam(context.Background(), teamKey)
 		if err != nil {
@@ -899,7 +957,30 @@ var issueCreateCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Build input
+
+	// Upload images if provided
+	if len(imagePaths) > 0 {
+		if !jsonOut && !plaintext {
+			fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+		}
+
+		for _, imagePath := range imagePaths {
+			assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+
+			// Inject image into description
+			altText := filepath.Base(imagePath)
+			description = files.InjectImageIntoMarkdown(description, assetURL, altText)
+
+			if !jsonOut && !plaintext {
+				fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+			}
+		}
+	}
+	// Build input
 		input := map[string]interface{}{
 			"title":  title,
 			"teamId": team.ID,
@@ -922,6 +1003,20 @@ var issueCreateCmd = &cobra.Command{
 			input["assigneeId"] = viewer.ID
 		}
 
+		// Handle labels if provided
+		if cmd.Flags().Changed("labels") {
+			labelsStr, _ := cmd.Flags().GetString("labels")
+			if labelsStr != "" {
+				labelIDs, err := resolveLabelIDs(context.Background(), client, teamKey, labelsStr)
+				if err != nil {
+					output.Error(fmt.Sprintf("Failed to resolve labels: %v", err), plaintext, jsonOut)
+					os.Exit(1)
+				}
+				input["labelIds"] = labelIDs
+			}
+		}
+
+
 	// Handle parent issue (if specified)
 	if cmd.Flags().Changed("parent-issue") {
 		parentIssue, _ := cmd.Flags().GetString("parent-issue")
@@ -941,7 +1036,6 @@ var issueCreateCmd = &cobra.Command{
 	if estimate >= 0 && estimate != 0 {
 		input["estimate"] = estimate
 	}
-
 		// Create issue
 		issue, err := client.CreateIssue(context.Background(), input)
 		if err != nil {
@@ -961,11 +1055,6 @@ var issueCreateCmd = &cobra.Command{
 			if issue.Assignee != nil {
 				fmt.Printf("  Assigned to: %s\n", color.New(color.FgCyan).Sprint(issue.Assignee.Name))
 			}
-			if issue.Parent != nil {
-				fmt.Printf("  Parent issue: %s - %s\n",
-					color.New(color.FgCyan).Sprint(issue.Parent.Identifier),
-					issue.Parent.Title)
-			}
 		}
 	},
 }
@@ -984,8 +1073,6 @@ Examples:
   linctl issue update LIN-123 --due-date "2024-12-31"
   linctl issue update LIN-123 --parent-issue LIN-456
   linctl issue update LIN-123 --parent-issue unassigned
-  linctl issue update LIN-123 --estimate 5
-  linctl issue update LIN-123 --estimate 0  # Clear estimate
   linctl issue update LIN-123 --title "New title" --assignee me --priority 2`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -1010,37 +1097,8 @@ Examples:
 		}
 
 		// Handle description update
-		description := ""
 		if cmd.Flags().Changed("description") {
-			description, _ = cmd.Flags().GetString("description")
-		}
-
-		// Handle image uploads
-		imagePaths, _ := cmd.Flags().GetStringArray("image")
-		if len(imagePaths) > 0 {
-			if !jsonOut && !plaintext {
-				fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
-			}
-
-			for _, imagePath := range imagePaths {
-				assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
-				if err != nil {
-					output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
-					os.Exit(1)
-				}
-
-				// Inject image into description
-				altText := filepath.Base(imagePath)
-				description = files.InjectImageIntoMarkdown(description, assetURL, altText)
-
-				if !jsonOut && !plaintext {
-					fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
-				}
-			}
-		}
-
-		// Set description if it was changed or if images were uploaded
-		if cmd.Flags().Changed("description") || len(imagePaths) > 0 {
+			description, _ := cmd.Flags().GetString("description")
 			input["description"] = description
 		}
 
@@ -1072,6 +1130,40 @@ Examples:
 						foundUser = &user
 						break
 					}
+
+	// Handle image uploads
+	imagePaths, _ := cmd.Flags().GetStringArray("image")
+	description := ""
+	if cmd.Flags().Changed("description") {
+		description, _ = cmd.Flags().GetString("description")
+	}
+
+	if len(imagePaths) > 0 {
+		if !jsonOut && !plaintext {
+			fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+		}
+
+		for _, imagePath := range imagePaths {
+			assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+
+			// Inject image into description
+			altText := filepath.Base(imagePath)
+			description = files.InjectImageIntoMarkdown(description, assetURL, altText)
+
+			if !jsonOut && !plaintext {
+				fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+			}
+		}
+	}
+
+	// Set description if it was changed or if images were uploaded
+	if cmd.Flags().Changed("description") || len(imagePaths) > 0 {
+		input["description"] = description
+	}
 				}
 
 				if foundUser == nil {
@@ -1162,17 +1254,41 @@ Examples:
 			}
 		}
 
-		// Handle estimate update
-		if cmd.Flags().Changed("estimate") {
-			estimate, _ := cmd.Flags().GetInt("estimate")
-			if estimate == 0 {
-				// Setting to 0 means clear the estimate
-				input["estimate"] = nil
+		// Handle labels update
+		if cmd.Flags().Changed("labels") {
+			labelsStr, _ := cmd.Flags().GetString("labels")
+
+			// Get the issue to know which team it belongs to
+			issue, err := client.GetIssue(context.Background(), args[0])
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to get issue: %v", err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+
+			if labelsStr == "" {
+				// Empty string means remove all labels
+				input["labelIds"] = []string{}
 			} else {
-				input["estimate"] = estimate
+				labelIDs, err := resolveLabelIDs(context.Background(), client, issue.Team.Key, labelsStr)
+				if err != nil {
+					output.Error(fmt.Sprintf("Failed to resolve labels: %v", err), plaintext, jsonOut)
+					os.Exit(1)
+				}
+				input["labelIds"] = labelIDs
 			}
 		}
 
+
+	// Handle estimate update
+	if cmd.Flags().Changed("estimate") {
+		estimate, _ := cmd.Flags().GetInt("estimate")
+		if estimate == 0 {
+			// Setting to 0 means clear the estimate
+			input["estimate"] = nil
+		} else {
+			input["estimate"] = estimate
+		}
+	}
 		// Check if any updates were specified
 		if len(input) == 0 {
 			output.Error("No updates specified. Use flags to specify what to update.", plaintext, jsonOut)
@@ -1196,107 +1312,6 @@ Examples:
 	},
 }
 
-var issueDownloadImagesCmd = &cobra.Command{
-	Use:   "download-images <issue-id>",
-	Short: "Download images from an issue's description and optionally comments",
-	Long:  `Downloads all images found in an issue's description and optionally from comments to a local directory.`,
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		plaintext := viper.GetBool("plaintext")
-		jsonOut := viper.GetBool("json")
-
-		authHeader, err := auth.GetAuthHeader()
-		if err != nil {
-			output.Error("Not authenticated. Run 'linctl auth' first.", plaintext, jsonOut)
-			os.Exit(1)
-		}
-
-		client := api.NewClient(authHeader)
-		issueID := args[0]
-
-		// Get the issue
-		issue, err := client.GetIssue(context.Background(), issueID)
-		if err != nil {
-			output.Error(fmt.Sprintf("Failed to get issue: %v", err), plaintext, jsonOut)
-			os.Exit(1)
-		}
-
-		// Extract images from description
-		images := files.ExtractImagesFromMarkdown(issue.Description)
-
-		// Extract images from comments if requested
-		includeComments, _ := cmd.Flags().GetBool("include-comments")
-		if includeComments && issue.Comments != nil && len(issue.Comments.Nodes) > 0 {
-			for _, comment := range issue.Comments.Nodes {
-				commentImages := files.ExtractImagesFromMarkdown(comment.Body)
-				images = append(images, commentImages...)
-			}
-		}
-
-		if len(images) == 0 {
-			if !jsonOut {
-				fmt.Println("No images found in issue description")
-			}
-			return
-		}
-
-		// Get output directory
-		outputDir, _ := cmd.Flags().GetString("output-dir")
-		if outputDir == "" {
-			outputDir = fmt.Sprintf("./linear-images-%s", issue.Identifier)
-		}
-
-		// Download each image
-		downloaded := 0
-		errors := []string{}
-
-		for i, img := range images {
-			// Generate filename
-			filename := fmt.Sprintf("image-%d%s", i+1, filepath.Ext(img.URL))
-			if img.AltText != "" {
-				filename = files.SanitizeFilename(img.AltText) + filepath.Ext(img.URL)
-			}
-
-			outputPath := filepath.Join(outputDir, filename)
-
-			// Download image
-			err := files.DownloadImage(context.Background(), img.URL, outputPath, authHeader)
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("Failed to download %s: %v", img.URL, err))
-				continue
-			}
-
-			if !jsonOut && !plaintext {
-				fmt.Printf("Downloaded: %s -> %s\n", img.URL, outputPath)
-			}
-			downloaded++
-		}
-
-		// Print summary
-		if jsonOut {
-			summary := map[string]interface{}{
-				"issue":      issue.Identifier,
-				"total":      len(images),
-				"downloaded": downloaded,
-				"failed":     len(errors),
-				"outputDir":  outputDir,
-			}
-			if len(errors) > 0 {
-				summary["errors"] = errors
-			}
-			output.JSON(summary)
-		} else if !plaintext {
-			fmt.Printf("\nDownloaded %d/%d images to %s\n", downloaded, len(images), outputDir)
-			if len(errors) > 0 {
-				fmt.Println("\nErrors:")
-				for _, e := range errors {
-					fmt.Printf("  - %s\n", e)
-				}
-			}
-		}
-	},
-}
-
 func init() {
 	rootCmd.AddCommand(issueCmd)
 	issueCmd.AddCommand(issueListCmd)
@@ -1305,11 +1320,6 @@ func init() {
 	issueCmd.AddCommand(issueAssignCmd)
 	issueCmd.AddCommand(issueCreateCmd)
 	issueCmd.AddCommand(issueUpdateCmd)
-	issueCmd.AddCommand(issueDownloadImagesCmd)
-
-	// Issue download-images flags
-	issueDownloadImagesCmd.Flags().StringP("output-dir", "o", "", "Output directory for downloaded images (default: ./linear-images-<issue-id>)")
-	issueDownloadImagesCmd.Flags().BoolP("include-comments", "c", false, "Include images from comments in addition to issue description")
 
 	// Issue list flags
 	issueListCmd.Flags().StringP("assignee", "a", "", "Filter by assignee (email or 'me')")
@@ -1338,6 +1348,7 @@ func init() {
 	issueCreateCmd.Flags().StringP("team", "t", "", "Team key (required)")
 	issueCreateCmd.Flags().Int("priority", 3, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueCreateCmd.Flags().BoolP("assign-me", "m", false, "Assign to yourself")
+	issueCreateCmd.Flags().String("labels", "", "Comma-separated label names (e.g., \"Bug,High Priority,Backend\")")
 	issueCreateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier")
 	issueCreateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to leave unset)")
 	issueCreateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
@@ -1352,6 +1363,7 @@ func init() {
 	issueUpdateCmd.Flags().Int("priority", -1, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueUpdateCmd.Flags().String("due-date", "", "Due date (YYYY-MM-DD format, or empty to remove)")
 	issueUpdateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier (or 'unassigned' to remove parent)")
+	issueUpdateCmd.Flags().String("labels", "", "Comma-separated label names (replaces existing labels, use empty string to remove all)")
 	issueUpdateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to clear)")
 	issueUpdateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 }
