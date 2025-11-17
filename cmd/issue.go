@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/dorkitude/linctl/pkg/api"
 	"github.com/dorkitude/linctl/pkg/auth"
+	"github.com/dorkitude/linctl/pkg/files"
 	"github.com/dorkitude/linctl/pkg/output"
 	"github.com/dorkitude/linctl/pkg/utils"
 	"github.com/fatih/color"
@@ -28,7 +30,8 @@ Examples:
   linctl issue list --newer-than 3_weeks_ago  # Show issues from last 3 weeks
   linctl issue search "login bug" --team ENG
   linctl issue get LIN-123
-  linctl issue create --title "Bug fix" --team ENG`,
+  linctl issue create --title "Bug fix" --team ENG
+  linctl issue create --title "Feature" --team ENG --estimate 3`,
 }
 
 var issueListCmd = &cobra.Command{
@@ -593,6 +596,10 @@ var issueGetCmd = &cobra.Command{
 
 		fmt.Printf("Priority: %s\n", priorityToString(issue.Priority))
 
+		if issue.Estimate != nil {
+			fmt.Printf("Estimate: %.0f\n", *issue.Estimate)
+		}
+
 		// Show project and cycle info
 		if issue.Project != nil {
 			fmt.Printf("Project: %s (%s)\n",
@@ -849,6 +856,8 @@ var issueCreateCmd = &cobra.Command{
 		teamKey, _ := cmd.Flags().GetString("team")
 		priority, _ := cmd.Flags().GetInt("priority")
 		assignToMe, _ := cmd.Flags().GetBool("assign-me")
+		estimate, _ := cmd.Flags().GetInt("estimate")
+		imagePaths, _ := cmd.Flags().GetStringArray("image")
 
 		if title == "" {
 			output.Error("Title is required (--title)", plaintext, jsonOut)
@@ -858,6 +867,29 @@ var issueCreateCmd = &cobra.Command{
 		if teamKey == "" {
 			output.Error("Team is required (--team)", plaintext, jsonOut)
 			os.Exit(1)
+		}
+
+		// Upload images if provided
+		if len(imagePaths) > 0 {
+			if !jsonOut && !plaintext {
+				fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+			}
+
+			for _, imagePath := range imagePaths {
+				assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+				if err != nil {
+					output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+					os.Exit(1)
+				}
+
+				// Inject image into description
+				altText := filepath.Base(imagePath)
+				description = files.InjectImageIntoMarkdown(description, assetURL, altText)
+
+				if !jsonOut && !plaintext {
+					fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+				}
+			}
 		}
 
 		// Get team ID from key
@@ -890,20 +922,25 @@ var issueCreateCmd = &cobra.Command{
 			input["assigneeId"] = viewer.ID
 		}
 
-		// Handle parent issue (if specified)
-		if cmd.Flags().Changed("parent-issue") {
-			parentIssue, _ := cmd.Flags().GetString("parent-issue")
-			if parentIssue != "" {
-				// Validate parent issue exists and get its UUID
-				parentIssueDetails, err := client.GetIssue(context.Background(), parentIssue)
-				if err != nil {
-					output.Error(fmt.Sprintf("Parent issue not found: %s", parentIssue), plaintext, jsonOut)
-					os.Exit(1)
-				}
-				// Use the UUID instead of the identifier
-				input["parentId"] = parentIssueDetails.ID
+	// Handle parent issue (if specified)
+	if cmd.Flags().Changed("parent-issue") {
+		parentIssue, _ := cmd.Flags().GetString("parent-issue")
+		if parentIssue != "" {
+			// Validate parent issue exists and get its UUID
+			parentIssueDetails, err := client.GetIssue(context.Background(), parentIssue)
+			if err != nil {
+				output.Error(fmt.Sprintf("Parent issue not found: %s", parentIssue), plaintext, jsonOut)
+				os.Exit(1)
 			}
+			// Use the UUID instead of the identifier
+			input["parentId"] = parentIssueDetails.ID
 		}
+	}
+
+	// Handle estimate
+	if estimate >= 0 && estimate != 0 {
+		input["estimate"] = estimate
+	}
 
 		// Create issue
 		issue, err := client.CreateIssue(context.Background(), input)
@@ -947,6 +984,8 @@ Examples:
   linctl issue update LIN-123 --due-date "2024-12-31"
   linctl issue update LIN-123 --parent-issue LIN-456
   linctl issue update LIN-123 --parent-issue unassigned
+  linctl issue update LIN-123 --estimate 5
+  linctl issue update LIN-123 --estimate 0  # Clear estimate
   linctl issue update LIN-123 --title "New title" --assignee me --priority 2`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -971,8 +1010,37 @@ Examples:
 		}
 
 		// Handle description update
+		description := ""
 		if cmd.Flags().Changed("description") {
-			description, _ := cmd.Flags().GetString("description")
+			description, _ = cmd.Flags().GetString("description")
+		}
+
+		// Handle image uploads
+		imagePaths, _ := cmd.Flags().GetStringArray("image")
+		if len(imagePaths) > 0 {
+			if !jsonOut && !plaintext {
+				fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+			}
+
+			for _, imagePath := range imagePaths {
+				assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+				if err != nil {
+					output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+					os.Exit(1)
+				}
+
+				// Inject image into description
+				altText := filepath.Base(imagePath)
+				description = files.InjectImageIntoMarkdown(description, assetURL, altText)
+
+				if !jsonOut && !plaintext {
+					fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+				}
+			}
+		}
+
+		// Set description if it was changed or if images were uploaded
+		if cmd.Flags().Changed("description") || len(imagePaths) > 0 {
 			input["description"] = description
 		}
 
@@ -1094,6 +1162,17 @@ Examples:
 			}
 		}
 
+		// Handle estimate update
+		if cmd.Flags().Changed("estimate") {
+			estimate, _ := cmd.Flags().GetInt("estimate")
+			if estimate == 0 {
+				// Setting to 0 means clear the estimate
+				input["estimate"] = nil
+			} else {
+				input["estimate"] = estimate
+			}
+		}
+
 		// Check if any updates were specified
 		if len(input) == 0 {
 			output.Error("No updates specified. Use flags to specify what to update.", plaintext, jsonOut)
@@ -1117,6 +1196,107 @@ Examples:
 	},
 }
 
+var issueDownloadImagesCmd = &cobra.Command{
+	Use:   "download-images <issue-id>",
+	Short: "Download images from an issue's description and optionally comments",
+	Long:  `Downloads all images found in an issue's description and optionally from comments to a local directory.`,
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		plaintext := viper.GetBool("plaintext")
+		jsonOut := viper.GetBool("json")
+
+		authHeader, err := auth.GetAuthHeader()
+		if err != nil {
+			output.Error("Not authenticated. Run 'linctl auth' first.", plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		client := api.NewClient(authHeader)
+		issueID := args[0]
+
+		// Get the issue
+		issue, err := client.GetIssue(context.Background(), issueID)
+		if err != nil {
+			output.Error(fmt.Sprintf("Failed to get issue: %v", err), plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		// Extract images from description
+		images := files.ExtractImagesFromMarkdown(issue.Description)
+
+		// Extract images from comments if requested
+		includeComments, _ := cmd.Flags().GetBool("include-comments")
+		if includeComments && issue.Comments != nil && len(issue.Comments.Nodes) > 0 {
+			for _, comment := range issue.Comments.Nodes {
+				commentImages := files.ExtractImagesFromMarkdown(comment.Body)
+				images = append(images, commentImages...)
+			}
+		}
+
+		if len(images) == 0 {
+			if !jsonOut {
+				fmt.Println("No images found in issue description")
+			}
+			return
+		}
+
+		// Get output directory
+		outputDir, _ := cmd.Flags().GetString("output-dir")
+		if outputDir == "" {
+			outputDir = fmt.Sprintf("./linear-images-%s", issue.Identifier)
+		}
+
+		// Download each image
+		downloaded := 0
+		errors := []string{}
+
+		for i, img := range images {
+			// Generate filename
+			filename := fmt.Sprintf("image-%d%s", i+1, filepath.Ext(img.URL))
+			if img.AltText != "" {
+				filename = files.SanitizeFilename(img.AltText) + filepath.Ext(img.URL)
+			}
+
+			outputPath := filepath.Join(outputDir, filename)
+
+			// Download image
+			err := files.DownloadImage(context.Background(), img.URL, outputPath, authHeader)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("Failed to download %s: %v", img.URL, err))
+				continue
+			}
+
+			if !jsonOut && !plaintext {
+				fmt.Printf("Downloaded: %s -> %s\n", img.URL, outputPath)
+			}
+			downloaded++
+		}
+
+		// Print summary
+		if jsonOut {
+			summary := map[string]interface{}{
+				"issue":      issue.Identifier,
+				"total":      len(images),
+				"downloaded": downloaded,
+				"failed":     len(errors),
+				"outputDir":  outputDir,
+			}
+			if len(errors) > 0 {
+				summary["errors"] = errors
+			}
+			output.JSON(summary)
+		} else if !plaintext {
+			fmt.Printf("\nDownloaded %d/%d images to %s\n", downloaded, len(images), outputDir)
+			if len(errors) > 0 {
+				fmt.Println("\nErrors:")
+				for _, e := range errors {
+					fmt.Printf("  - %s\n", e)
+				}
+			}
+		}
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(issueCmd)
 	issueCmd.AddCommand(issueListCmd)
@@ -1125,6 +1305,11 @@ func init() {
 	issueCmd.AddCommand(issueAssignCmd)
 	issueCmd.AddCommand(issueCreateCmd)
 	issueCmd.AddCommand(issueUpdateCmd)
+	issueCmd.AddCommand(issueDownloadImagesCmd)
+
+	// Issue download-images flags
+	issueDownloadImagesCmd.Flags().StringP("output-dir", "o", "", "Output directory for downloaded images (default: ./linear-images-<issue-id>)")
+	issueDownloadImagesCmd.Flags().BoolP("include-comments", "c", false, "Include images from comments in addition to issue description")
 
 	// Issue list flags
 	issueListCmd.Flags().StringP("assignee", "a", "", "Filter by assignee (email or 'me')")
@@ -1154,6 +1339,8 @@ func init() {
 	issueCreateCmd.Flags().Int("priority", 3, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueCreateCmd.Flags().BoolP("assign-me", "m", false, "Assign to yourself")
 	issueCreateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier")
+	issueCreateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to leave unset)")
+	issueCreateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 	_ = issueCreateCmd.MarkFlagRequired("title")
 	_ = issueCreateCmd.MarkFlagRequired("team")
 
@@ -1165,4 +1352,6 @@ func init() {
 	issueUpdateCmd.Flags().Int("priority", -1, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueUpdateCmd.Flags().String("due-date", "", "Due date (YYYY-MM-DD format, or empty to remove)")
 	issueUpdateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier (or 'unassigned' to remove parent)")
+	issueUpdateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to clear)")
+	issueUpdateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 }
