@@ -594,6 +594,10 @@ var issueGetCmd = &cobra.Command{
 
 		fmt.Printf("Priority: %s\n", priorityToString(issue.Priority))
 
+		if issue.Estimate != nil {
+			fmt.Printf("Estimate: %.0f\n", *issue.Estimate)
+		}
+
 		// Show project and cycle info
 		if issue.Project != nil {
 			fmt.Printf("Project: %s (%s)\n",
@@ -850,7 +854,7 @@ var issueCreateCmd = &cobra.Command{
 		teamKey, _ := cmd.Flags().GetString("team")
 		priority, _ := cmd.Flags().GetInt("priority")
 		assignToMe, _ := cmd.Flags().GetBool("assign-me")
-		estimate, _ := cmd.Flags().GetFloat64("estimate")
+		estimate, _ := cmd.Flags().GetInt("estimate")
 
 		if title == "" {
 			output.Error("Title is required (--title)", plaintext, jsonOut)
@@ -1085,7 +1089,7 @@ Examples:
 
 		// Handle estimate update
 		if cmd.Flags().Changed("estimate") {
-			estimate, _ := cmd.Flags().GetFloat64("estimate")
+			estimate, _ := cmd.Flags().GetInt("estimate")
 			if estimate == 0 {
 				// Setting to 0 means clear the estimate
 				input["estimate"] = nil
@@ -1153,7 +1157,7 @@ func init() {
 	issueCreateCmd.Flags().StringP("team", "t", "", "Team key (required)")
 	issueCreateCmd.Flags().Int("priority", 3, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueCreateCmd.Flags().BoolP("assign-me", "m", false, "Assign to yourself")
-	issueCreateCmd.Flags().Float64("estimate", -1, "Estimate (story points/hours, use 0 to leave unset)")
+	issueCreateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to leave unset)")
 	_ = issueCreateCmd.MarkFlagRequired("title")
 	_ = issueCreateCmd.MarkFlagRequired("team")
 
@@ -1165,5 +1169,5 @@ func init() {
 	issueUpdateCmd.Flags().Int("priority", -1, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueUpdateCmd.Flags().String("due-date", "", "Due date (YYYY-MM-DD format, or empty to remove)")
 	issueUpdateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier (or 'unassigned' to remove parent)")
-	issueUpdateCmd.Flags().Float64("estimate", -1, "Estimate (story points/hours, use 0 to clear)")
+	issueUpdateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to clear)")
 }
