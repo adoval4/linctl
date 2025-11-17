@@ -55,11 +55,17 @@ func ExtractImagesFromMarkdown(markdown string) []ImageInfo {
 }
 
 // DownloadImage downloads an image from a URL and saves it to the specified path
-func DownloadImage(ctx context.Context, url string, outputPath string) error {
+// authHeader is optional and will be used for authentication if provided (e.g., for Linear URLs)
+func DownloadImage(ctx context.Context, url string, outputPath string, authHeader string) error {
 	// Create HTTP request with context
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add authentication header if provided
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
 	}
 
 	// Execute request

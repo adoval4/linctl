@@ -1154,8 +1154,8 @@ Examples:
 
 var issueDownloadImagesCmd = &cobra.Command{
 	Use:   "download-images <issue-id>",
-	Short: "Download images from an issue's description",
-	Long:  `Downloads all images found in an issue's description to a local directory.`,
+	Short: "Download images from an issue's description and optionally comments",
+	Long:  `Downloads all images found in an issue's description and optionally from comments to a local directory.`,
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		plaintext := viper.GetBool("plaintext")
@@ -1179,6 +1179,15 @@ var issueDownloadImagesCmd = &cobra.Command{
 
 		// Extract images from description
 		images := files.ExtractImagesFromMarkdown(issue.Description)
+
+		// Extract images from comments if requested
+		includeComments, _ := cmd.Flags().GetBool("include-comments")
+		if includeComments && issue.Comments != nil && len(issue.Comments.Nodes) > 0 {
+			for _, comment := range issue.Comments.Nodes {
+				commentImages := files.ExtractImagesFromMarkdown(comment.Body)
+				images = append(images, commentImages...)
+			}
+		}
 
 		if len(images) == 0 {
 			if !jsonOut {
@@ -1207,7 +1216,7 @@ var issueDownloadImagesCmd = &cobra.Command{
 			outputPath := filepath.Join(outputDir, filename)
 
 			// Download image
-			err := files.DownloadImage(context.Background(), img.URL, outputPath)
+			err := files.DownloadImage(context.Background(), img.URL, outputPath, authHeader)
 			if err != nil {
 				errors = append(errors, fmt.Sprintf("Failed to download %s: %v", img.URL, err))
 				continue
@@ -1256,6 +1265,7 @@ func init() {
 
 	// Issue download-images flags
 	issueDownloadImagesCmd.Flags().StringP("output-dir", "o", "", "Output directory for downloaded images (default: ./linear-images-<issue-id>)")
+	issueDownloadImagesCmd.Flags().BoolP("include-comments", "c", false, "Include images from comments in addition to issue description")
 
 	// Issue list flags
 	issueListCmd.Flags().StringP("assignee", "a", "", "Filter by assignee (email or 'me')")

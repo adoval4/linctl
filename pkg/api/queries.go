@@ -1540,15 +1540,18 @@ func (c *Client) FileUpload(ctx context.Context, filename string, size int, cont
 	query := `
 		mutation FileUpload($filename: String!, $size: Int!, $contentType: String!) {
 			fileUpload(filename: $filename, size: $size, contentType: $contentType) {
-				uploadUrl
-				assetUrl
-				headers {
-					key
-					value
+				success
+				uploadFile {
+					uploadUrl
+					assetUrl
+					headers {
+						key
+						value
+					}
+					contentType
+					filename
+					size
 				}
-				contentType
-				filename
-				size
 			}
 		}
 	`
@@ -1560,7 +1563,10 @@ func (c *Client) FileUpload(ctx context.Context, filename string, size int, cont
 	}
 
 	var response struct {
-		FileUpload UploadFile `json:"fileUpload"`
+		FileUpload struct {
+			Success    bool       `json:"success"`
+			UploadFile UploadFile `json:"uploadFile"`
+		} `json:"fileUpload"`
 	}
 
 	err := c.Execute(ctx, query, variables, &response)
@@ -1568,5 +1574,5 @@ func (c *Client) FileUpload(ctx context.Context, filename string, size int, cont
 		return nil, err
 	}
 
-	return &response.FileUpload, nil
+	return &response.FileUpload.UploadFile, nil
 }
