@@ -1374,6 +1374,107 @@ Examples:
 	},
 }
 
+var issueDownloadImagesCmd = &cobra.Command{
+	Use:   "download-images <issue-id>",
+	Short: "Download images from an issue's description and optionally comments",
+	Long:  `Downloads all images found in an issue's description and optionally from comments to a local directory.`,
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		plaintext := viper.GetBool("plaintext")
+		jsonOut := viper.GetBool("json")
+
+		authHeader, err := auth.GetAuthHeader()
+		if err != nil {
+			output.Error("Not authenticated. Run 'linctl auth' first.", plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		client := api.NewClient(authHeader)
+		issueID := args[0]
+
+		// Get the issue
+		issue, err := client.GetIssue(context.Background(), issueID)
+		if err != nil {
+			output.Error(fmt.Sprintf("Failed to get issue: %v", err), plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		// Extract images from description
+		images := files.ExtractImagesFromMarkdown(issue.Description)
+
+		// Extract images from comments if requested
+		includeComments, _ := cmd.Flags().GetBool("include-comments")
+		if includeComments && issue.Comments != nil && len(issue.Comments.Nodes) > 0 {
+			for _, comment := range issue.Comments.Nodes {
+				commentImages := files.ExtractImagesFromMarkdown(comment.Body)
+				images = append(images, commentImages...)
+			}
+		}
+
+		if len(images) == 0 {
+			if !jsonOut {
+				fmt.Println("No images found in issue description")
+			}
+			return
+		}
+
+		// Get output directory
+		outputDir, _ := cmd.Flags().GetString("output-dir")
+		if outputDir == "" {
+			outputDir = fmt.Sprintf("./linear-images-%s", issue.Identifier)
+		}
+
+		// Download each image
+		downloaded := 0
+		errors := []string{}
+
+		for i, img := range images {
+			// Generate filename
+			filename := fmt.Sprintf("image-%d%s", i+1, filepath.Ext(img.URL))
+			if img.AltText != "" {
+				filename = files.SanitizeFilename(img.AltText) + filepath.Ext(img.URL)
+			}
+
+			outputPath := filepath.Join(outputDir, filename)
+
+			// Download image
+			err := files.DownloadImage(context.Background(), img.URL, outputPath, authHeader)
+			if err != nil {
+				errors = append(errors, fmt.Sprintf("Failed to download %s: %v", img.URL, err))
+				continue
+			}
+
+			if !jsonOut && !plaintext {
+				fmt.Printf("Downloaded: %s -> %s\n", img.URL, outputPath)
+			}
+			downloaded++
+		}
+
+		// Print summary
+		if jsonOut {
+			summary := map[string]interface{}{
+				"issue":      issue.Identifier,
+				"total":      len(images),
+				"downloaded": downloaded,
+				"failed":     len(errors),
+				"outputDir":  outputDir,
+			}
+			if len(errors) > 0 {
+				summary["errors"] = errors
+			}
+			output.JSON(summary)
+		} else if !plaintext {
+			fmt.Printf("\nDownloaded %d/%d images to %s\n", downloaded, len(images), outputDir)
+			if len(errors) > 0 {
+				fmt.Println("\nErrors:")
+				for _, e := range errors {
+					fmt.Printf("  - %s\n", e)
+				}
+			}
+		}
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(issueCmd)
 	issueCmd.AddCommand(issueListCmd)
@@ -1382,6 +1483,7 @@ func init() {
 	issueCmd.AddCommand(issueAssignCmd)
 	issueCmd.AddCommand(issueCreateCmd)
 	issueCmd.AddCommand(issueUpdateCmd)
+	issueCmd.AddCommand(issueDownloadImagesCmd)
 
 	// Issue list flags
 	issueListCmd.Flags().StringP("assignee", "a", "", "Filter by assignee (email or 'me')")
@@ -1430,4 +1532,8 @@ func init() {
 	issueUpdateCmd.Flags().String("labels", "", "Comma-separated label names (replaces existing labels, use empty string to remove all)")
 	issueUpdateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to clear)")
 	issueUpdateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
+
+	// Issue download-images flags
+	issueDownloadImagesCmd.Flags().StringP("output-dir", "o", "", "Output directory for downloaded images (default: ./linear-images-<issue-id>)")
+	issueDownloadImagesCmd.Flags().BoolP("include-comments", "c", false, "Include images from comments in addition to issue description")
 }
