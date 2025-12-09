@@ -114,6 +114,9 @@ func renderIssueCollection(issues *api.Issues, plaintext, jsonOut bool, emptyMes
 			if issue.Team != nil {
 				fmt.Printf("- **Team**: %s\n", issue.Team.Key)
 			}
+			if issue.Parent != nil {
+				fmt.Printf("- **Parent**: %s\n", issue.Parent.Identifier)
+			}
 			fmt.Printf("- **Created**: %s\n", issue.CreatedAt.Format("2006-01-02"))
 			fmt.Printf("- **URL**: %s\n", issue.URL)
 			if issue.Description != "" {
@@ -125,7 +128,7 @@ func renderIssueCollection(issues *api.Issues, plaintext, jsonOut bool, emptyMes
 		return
 	}
 
-	headers := []string{"Title", "State", "Assignee", "Team", "Created", "URL"}
+	headers := []string{"Title", "State", "Assignee", "Team", "Parent", "Created", "URL"}
 	rows := make([][]string, len(issues.Nodes))
 
 	for i, issue := range issues.Nodes {
@@ -166,11 +169,17 @@ func renderIssueCollection(issues *api.Issues, plaintext, jsonOut bool, emptyMes
 			assignee = color.New(color.FgYellow).Sprint(assignee)
 		}
 
+		parent := "-"
+		if issue.Parent != nil {
+			parent = issue.Parent.Identifier
+		}
+
 		rows[i] = []string{
 			truncateString(issue.Title, 40),
 			state,
 			assignee,
 			team,
+			parent,
 			issue.CreatedAt.Format("2006-01-02"),
 			issue.URL,
 		}
@@ -706,6 +715,8 @@ var issueGetCmd = &cobra.Command{
 
 func buildIssueFilter(cmd *cobra.Command) map[string]interface{} {
 	filter := make(map[string]interface{})
+	plaintext := viper.GetBool("plaintext")
+	jsonOut := viper.GetBool("json")
 
 	if assignee, _ := cmd.Flags().GetString("assignee"); assignee != "" {
 		if assignee == "me" {
@@ -745,13 +756,57 @@ func buildIssueFilter(cmd *cobra.Command) map[string]interface{} {
 	newerThan, _ := cmd.Flags().GetString("newer-than")
 	createdAt, err := utils.ParseTimeExpression(newerThan)
 	if err != nil {
-		plaintext := viper.GetBool("plaintext")
-		jsonOut := viper.GetBool("json")
 		output.Error(fmt.Sprintf("Invalid newer-than value: %v", err), plaintext, jsonOut)
 		os.Exit(1)
 	}
 	if createdAt != "" {
 		filter["createdAt"] = map[string]interface{}{"gte": createdAt}
+	}
+
+	// Handle parent filtering
+	hasParent, _ := cmd.Flags().GetBool("has-parent")
+	noParent, _ := cmd.Flags().GetBool("no-parent")
+	parentIssue, _ := cmd.Flags().GetString("parent-issue")
+
+	// Check for mutually exclusive flags
+	flagCount := 0
+	if hasParent {
+		flagCount++
+	}
+	if noParent {
+		flagCount++
+	}
+	if parentIssue != "" {
+		flagCount++
+	}
+
+	if flagCount > 1 {
+		output.Error("Cannot use --has-parent, --no-parent, and --parent-issue together. Choose only one.", plaintext, jsonOut)
+		os.Exit(1)
+	}
+
+	if hasParent {
+		// Filter for issues that have a parent (sub-issues)
+		filter["parent"] = map[string]interface{}{"null": false}
+	} else if noParent {
+		// Filter for issues that don't have a parent (top-level issues)
+		filter["parent"] = map[string]interface{}{"null": true}
+	} else if parentIssue != "" {
+		// Filter for sub-issues of a specific parent
+		authHeader, err := auth.GetAuthHeader()
+		if err != nil {
+			output.Error("Not authenticated. Run 'linctl auth' first.", plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		client := api.NewClient(authHeader)
+		parent, err := client.GetIssue(context.Background(), parentIssue)
+		if err != nil {
+			output.Error(fmt.Sprintf("Failed to find parent issue '%s': %v", parentIssue, err), plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		filter["parent"] = map[string]interface{}{"id": map[string]interface{}{"eq": parent.ID}}
 	}
 
 	return filter
@@ -1494,6 +1549,9 @@ func init() {
 	issueListCmd.Flags().BoolP("include-completed", "c", false, "Include completed and canceled issues")
 	issueListCmd.Flags().StringP("sort", "o", "linear", "Sort order: linear (default), created, updated")
 	issueListCmd.Flags().StringP("newer-than", "n", "", "Show issues created after this time (default: 6_months_ago, use 'all_time' for no filter)")
+	issueListCmd.Flags().Bool("has-parent", false, "Filter for issues that have a parent (sub-issues only)")
+	issueListCmd.Flags().Bool("no-parent", false, "Filter for issues that don't have a parent (top-level issues only)")
+	issueListCmd.Flags().String("parent-issue", "", "Filter for sub-issues of a specific parent issue (e.g., 'LIN-123')")
 
 	// Issue search flags
 	issueSearchCmd.Flags().StringP("assignee", "a", "", "Filter by assignee (email or 'me')")
@@ -1505,6 +1563,9 @@ func init() {
 	issueSearchCmd.Flags().Bool("include-archived", false, "Include archived issues in results")
 	issueSearchCmd.Flags().StringP("sort", "o", "linear", "Sort order: linear (default), created, updated")
 	issueSearchCmd.Flags().StringP("newer-than", "n", "", "Show issues created after this time (default: 6_months_ago, use 'all_time' for no filter)")
+	issueSearchCmd.Flags().Bool("has-parent", false, "Filter for issues that have a parent (sub-issues only)")
+	issueSearchCmd.Flags().Bool("no-parent", false, "Filter for issues that don't have a parent (top-level issues only)")
+	issueSearchCmd.Flags().String("parent-issue", "", "Filter for sub-issues of a specific parent issue (e.g., 'LIN-123')")
 
 	// Issue create flags
 	issueCreateCmd.Flags().StringP("title", "", "", "Issue title (required)")
