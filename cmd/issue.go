@@ -114,6 +114,9 @@ func renderIssueCollection(issues *api.Issues, plaintext, jsonOut bool, emptyMes
 			if issue.Team != nil {
 				fmt.Printf("- **Team**: %s\n", issue.Team.Key)
 			}
+			if issue.Parent != nil {
+				fmt.Printf("- **Parent**: %s\n", issue.Parent.Identifier)
+			}
 			fmt.Printf("- **Created**: %s\n", issue.CreatedAt.Format("2006-01-02"))
 			fmt.Printf("- **URL**: %s\n", issue.URL)
 			if issue.Description != "" {
@@ -125,7 +128,7 @@ func renderIssueCollection(issues *api.Issues, plaintext, jsonOut bool, emptyMes
 		return
 	}
 
-	headers := []string{"Title", "State", "Assignee", "Team", "Created", "URL"}
+	headers := []string{"Title", "State", "Assignee", "Team", "Parent", "Created", "URL"}
 	rows := make([][]string, len(issues.Nodes))
 
 	for i, issue := range issues.Nodes {
@@ -166,11 +169,17 @@ func renderIssueCollection(issues *api.Issues, plaintext, jsonOut bool, emptyMes
 			assignee = color.New(color.FgYellow).Sprint(assignee)
 		}
 
+		parent := "-"
+		if issue.Parent != nil {
+			parent = issue.Parent.Identifier
+		}
+
 		rows[i] = []string{
 			truncateString(issue.Title, 40),
 			state,
 			assignee,
 			team,
+			parent,
 			issue.CreatedAt.Format("2006-01-02"),
 			issue.URL,
 		}
