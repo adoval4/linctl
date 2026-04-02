@@ -1017,7 +1017,9 @@ var issueCreateCmd = &cobra.Command{
 
 		// Get flags
 		title, _ := cmd.Flags().GetString("title")
+		title = strings.ReplaceAll(title, `\n`, "\n")
 		description, _ := cmd.Flags().GetString("description")
+		description = strings.ReplaceAll(description, `\n`, "\n")
 		teamKey, _ := cmd.Flags().GetString("team")
 		priority, _ := cmd.Flags().GetInt("priority")
 		assignToMe, _ := cmd.Flags().GetBool("assign-me")
@@ -1192,13 +1194,13 @@ Examples:
 		// Handle title update
 		if cmd.Flags().Changed("title") {
 			title, _ := cmd.Flags().GetString("title")
-			input["title"] = title
+			input["title"] = strings.ReplaceAll(title, `\n`, "\n")
 		}
 
 		// Handle description update
 		if cmd.Flags().Changed("description") {
 			description, _ := cmd.Flags().GetString("description")
-			input["description"] = description
+			input["description"] = strings.ReplaceAll(description, `\n`, "\n")
 		}
 
 		// Handle assignee update
@@ -1235,6 +1237,7 @@ Examples:
 	description := ""
 	if cmd.Flags().Changed("description") {
 		description, _ = cmd.Flags().GetString("description")
+		description = strings.ReplaceAll(description, `\n`, "\n")
 	}
 
 	if len(imagePaths) > 0 {
