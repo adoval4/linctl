@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dorkitude/linctl/pkg/api"
 	"github.com/dorkitude/linctl/pkg/auth"
@@ -809,6 +810,47 @@ func buildIssueFilter(cmd *cobra.Command) map[string]interface{} {
 		filter["parent"] = map[string]interface{}{"id": map[string]interface{}{"eq": parent.ID}}
 	}
 
+	// Handle current-cycle filter
+	currentCycle, _ := cmd.Flags().GetBool("current-cycle")
+	if currentCycle {
+		team, _ := cmd.Flags().GetString("team")
+		if team == "" {
+			output.Error("--current-cycle requires --team to be specified", plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		authHeader, err := auth.GetAuthHeader()
+		if err != nil {
+			output.Error("Not authenticated. Run 'linctl auth' first.", plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		client := api.NewClient(authHeader)
+		cycles, err := client.GetTeamCycles(context.Background(), team, 100, nil)
+		if err != nil {
+			output.Error(fmt.Sprintf("Failed to fetch cycles for team '%s': %v", team, err), plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		now := time.Now()
+		var activeCycleID string
+		for _, cycle := range cycles.Nodes {
+			startsAt, err1 := time.Parse(time.RFC3339, cycle.StartsAt)
+			endsAt, err2 := time.Parse(time.RFC3339, cycle.EndsAt)
+			if err1 == nil && err2 == nil && !now.Before(startsAt) && !now.After(endsAt) {
+				activeCycleID = cycle.ID
+				break
+			}
+		}
+
+		if activeCycleID == "" {
+			output.Error(fmt.Sprintf("No active cycle found for team '%s'", team), plaintext, jsonOut)
+			os.Exit(1)
+		}
+
+		filter["cycle"] = map[string]interface{}{"id": map[string]interface{}{"eq": activeCycleID}}
+	}
+
 	return filter
 }
 
@@ -1555,6 +1597,7 @@ func init() {
 	issueListCmd.Flags().Bool("has-parent", false, "Filter for issues that have a parent (sub-issues only)")
 	issueListCmd.Flags().Bool("no-parent", false, "Filter for issues that don't have a parent (top-level issues only)")
 	issueListCmd.Flags().String("parent-issue", "", "Filter for sub-issues of a specific parent issue (e.g., 'LIN-123')")
+	issueListCmd.Flags().Bool("current-cycle", false, "Filter issues in the current active cycle (requires --team)")
 
 	// Issue search flags
 	issueSearchCmd.Flags().StringP("assignee", "a", "", "Filter by assignee (email or 'me')")
