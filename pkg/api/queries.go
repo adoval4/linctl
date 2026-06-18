@@ -74,6 +74,7 @@ type Issue struct {
 	Creator               *User            `json:"creator"`
 	Subscribers           *Users           `json:"subscribers"`
 	Relations             *IssueRelations  `json:"relations"`
+	InverseRelations      *IssueRelations  `json:"inverseRelations"`
 	History               *IssueHistory    `json:"history"`
 	Reactions             []Reaction       `json:"reactions"`
 	SlackIssueComments    []SlackComment   `json:"slackIssueComments"`
@@ -748,6 +749,21 @@ func (c *Client) GetIssue(ctx context.Context, id string) (*Issue, error) {
 						id
 						type
 						relatedIssue {
+							id
+							identifier
+							title
+							state {
+								name
+								type
+							}
+						}
+					}
+				}
+				inverseRelations {
+					nodes {
+						id
+						type
+						issue {
 							id
 							identifier
 							title

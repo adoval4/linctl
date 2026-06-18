@@ -427,11 +427,16 @@ var issueGetCmd = &cobra.Command{
 				}
 			}
 
-			// Relations
-			if issue.Relations != nil && len(issue.Relations.Nodes) > 0 {
+			// Relations (outgoing + incoming)
+			hasOutgoing := issue.Relations != nil && len(issue.Relations.Nodes) > 0
+			hasIncoming := issue.InverseRelations != nil && len(issue.InverseRelations.Nodes) > 0
+			if hasOutgoing || hasIncoming {
 				fmt.Printf("\n## Related Issues\n")
-				for _, relation := range issue.Relations.Nodes {
-					if relation.RelatedIssue != nil {
+				if hasOutgoing {
+					for _, relation := range issue.Relations.Nodes {
+						if relation.RelatedIssue == nil {
+							continue
+						}
 						relationType := relation.Type
 						switch relationType {
 						case "blocks":
@@ -446,6 +451,30 @@ var issueGetCmd = &cobra.Command{
 						fmt.Printf("- %s: %s - %s", relationType, relation.RelatedIssue.Identifier, relation.RelatedIssue.Title)
 						if relation.RelatedIssue.State != nil {
 							fmt.Printf(" [%s]", relation.RelatedIssue.State.Name)
+						}
+						fmt.Println()
+					}
+				}
+				if hasIncoming {
+					for _, relation := range issue.InverseRelations.Nodes {
+						if relation.Issue == nil {
+							continue
+						}
+						// Invert relation type from the perspective of this issue
+						var label string
+						switch relation.Type {
+						case "blocks":
+							label = "Blocked by"
+						case "duplicate":
+							label = "Duplicated by"
+						case "related":
+							label = "Related to"
+						default:
+							label = relation.Type
+						}
+						fmt.Printf("- %s: %s - %s", label, relation.Issue.Identifier, relation.Issue.Title)
+						if relation.Issue.State != nil {
+							fmt.Printf(" [%s]", relation.Issue.State.Name)
 						}
 						fmt.Println()
 					}
