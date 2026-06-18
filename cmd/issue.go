@@ -907,6 +907,30 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
+// resolveBlockedByIDs parses a comma-separated list of issue identifiers and
+// resolves each to its Linear UUID. Empty entries are skipped; duplicates are
+// de-duplicated to avoid creating duplicate relations.
+func resolveBlockedByIDs(ctx context.Context, client *api.Client, raw string) ([]string, error) {
+	seen := make(map[string]bool)
+	var ids []string
+	for _, ident := range strings.Split(raw, ",") {
+		ident = strings.TrimSpace(ident)
+		if ident == "" {
+			continue
+		}
+		issue, err := client.GetIssue(ctx, ident)
+		if err != nil {
+			return nil, fmt.Errorf("blocker issue not found: %s", ident)
+		}
+		if seen[issue.ID] {
+			continue
+		}
+		seen[issue.ID] = true
+		ids = append(ids, issue.ID)
+	}
+	return ids, nil
+}
+
 // resolveCycleID resolves a cycle string (number or special value) to a cycle ID
 // Returns nil if the cycle should be unassigned
 func resolveCycleID(ctx context.Context, client *api.Client, teamKey string, cycleStr string, plaintext bool, jsonOut bool) (*string, error) {
@@ -1208,11 +1232,31 @@ var issueCreateCmd = &cobra.Command{
 			input["estimate"] = estimate
 		}
 
+		// Resolve blocked-by identifiers up front so we fail fast before creating the issue
+		var blockedByIDs []string
+		if cmd.Flags().Changed("blocked-by") {
+			blockedByStr, _ := cmd.Flags().GetString("blocked-by")
+			ids, err := resolveBlockedByIDs(context.Background(), client, blockedByStr)
+			if err != nil {
+				output.Error(err.Error(), plaintext, jsonOut)
+				os.Exit(1)
+			}
+			blockedByIDs = ids
+		}
+
 		// Create issue
 		issue, err := client.CreateIssue(context.Background(), input)
 		if err != nil {
 			output.Error(fmt.Sprintf("Failed to create issue: %v", err), plaintext, jsonOut)
 			os.Exit(1)
+		}
+
+		// Create blocked-by relations after the issue exists
+		for _, blockerID := range blockedByIDs {
+			if err := client.CreateIssueRelation(context.Background(), blockerID, issue.ID, "blocks"); err != nil {
+				output.Error(fmt.Sprintf("Issue %s created, but failed to add blocker relation: %v", issue.Identifier, err), plaintext, jsonOut)
+				os.Exit(1)
+			}
 		}
 
 		if jsonOut {
@@ -1480,17 +1524,46 @@ Examples:
 	}
 
 
+		// Resolve blocked-by identifiers before mutating so we fail fast
+		var blockedByIDs []string
+		if cmd.Flags().Changed("blocked-by") {
+			blockedByStr, _ := cmd.Flags().GetString("blocked-by")
+			ids, err := resolveBlockedByIDs(context.Background(), client, blockedByStr)
+			if err != nil {
+				output.Error(err.Error(), plaintext, jsonOut)
+				os.Exit(1)
+			}
+			blockedByIDs = ids
+		}
+
 		// Check if any updates were specified
-		if len(input) == 0 {
+		if len(input) == 0 && !cmd.Flags().Changed("blocked-by") {
 			output.Error("No updates specified. Use flags to specify what to update.", plaintext, jsonOut)
 			os.Exit(1)
 		}
 
-		// Update the issue
-		issue, err := client.UpdateIssue(context.Background(), args[0], input)
-		if err != nil {
-			output.Error(fmt.Sprintf("Failed to update issue: %v", err), plaintext, jsonOut)
-			os.Exit(1)
+		// Update the issue (skip the mutation if only --blocked-by was supplied)
+		var issue *api.Issue
+		if len(input) > 0 {
+			issue, err = client.UpdateIssue(context.Background(), args[0], input)
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to update issue: %v", err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+		} else {
+			issue, err = client.GetIssue(context.Background(), args[0])
+			if err != nil {
+				output.Error(fmt.Sprintf("Failed to get issue: %v", err), plaintext, jsonOut)
+				os.Exit(1)
+			}
+		}
+
+		// Add blocked-by relations
+		for _, blockerID := range blockedByIDs {
+			if err := client.CreateIssueRelation(context.Background(), blockerID, issue.ID, "blocks"); err != nil {
+				output.Error(fmt.Sprintf("Issue %s updated, but failed to add blocker relation: %v", issue.Identifier, err), plaintext, jsonOut)
+				os.Exit(1)
+			}
 		}
 
 		if jsonOut {
@@ -1651,6 +1724,7 @@ func init() {
 	issueCreateCmd.Flags().String("cycle", "", "Cycle number to assign (e.g., '5', or 'unassigned' to remove)")
 	issueCreateCmd.Flags().String("labels", "", "Comma-separated label names (e.g., \"Bug,High Priority,Backend\")")
 	issueCreateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier")
+	issueCreateCmd.Flags().String("blocked-by", "", "Comma-separated issue identifiers that block this issue (e.g., \"LIN-12,LIN-34\")")
 	issueCreateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to leave unset)")
 	issueCreateCmd.Flags().StringArrayP("image", "i", []string{}, "Path to image file(s) to upload and attach (can be used multiple times)")
 	_ = issueCreateCmd.MarkFlagRequired("title")
@@ -1664,6 +1738,7 @@ func init() {
 	issueUpdateCmd.Flags().Int("priority", -1, "Priority (0=None, 1=Urgent, 2=High, 3=Normal, 4=Low)")
 	issueUpdateCmd.Flags().String("due-date", "", "Due date (YYYY-MM-DD format, or empty to remove)")
 	issueUpdateCmd.Flags().String("parent-issue", "", "Parent issue ID/identifier (or 'unassigned' to remove parent)")
+	issueUpdateCmd.Flags().String("blocked-by", "", "Comma-separated issue identifiers to add as blockers (e.g., \"LIN-12,LIN-34\")")
 	issueUpdateCmd.Flags().String("cycle", "", "Cycle number to assign (e.g., '5', or 'unassigned' to remove)")
 	issueUpdateCmd.Flags().String("labels", "", "Comma-separated label names (replaces existing labels, use empty string to remove all)")
 	issueUpdateCmd.Flags().Int("estimate", -1, "Estimate (story points, use 0 to clear)")

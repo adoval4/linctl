@@ -1255,6 +1255,39 @@ func (c *Client) CreateIssue(ctx context.Context, input map[string]interface{}) 
 	return &response.IssueCreate.Issue, nil
 }
 
+// CreateIssueRelation creates a relation between two issues.
+// relationType must be one of: "blocks", "duplicate", "related".
+// To express "issueID is blocked by blockerID", call with
+// issueID=blockerID, relatedIssueID=blockedID, relationType="blocks".
+func (c *Client) CreateIssueRelation(ctx context.Context, issueID, relatedIssueID, relationType string) error {
+	query := `
+		mutation CreateIssueRelation($input: IssueRelationCreateInput!) {
+			issueRelationCreate(input: $input) {
+				success
+				issueRelation {
+					id
+				}
+			}
+		}
+	`
+
+	variables := map[string]interface{}{
+		"input": map[string]interface{}{
+			"issueId":        issueID,
+			"relatedIssueId": relatedIssueID,
+			"type":           relationType,
+		},
+	}
+
+	var response struct {
+		IssueRelationCreate struct {
+			Success bool `json:"success"`
+		} `json:"issueRelationCreate"`
+	}
+
+	return c.Execute(ctx, query, variables, &response)
+}
+
 // GetTeam returns a single team by key
 func (c *Client) GetTeam(ctx context.Context, key string) (*Team, error) {
 	query := `
