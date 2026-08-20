@@ -1312,10 +1312,39 @@ Examples:
 			input["title"] = strings.ReplaceAll(title, `\n`, "\n")
 		}
 
-		// Handle description update
+		// Handle description update and image uploads
+		imagePaths, _ := cmd.Flags().GetStringArray("image")
+		description := ""
 		if cmd.Flags().Changed("description") {
-			description, _ := cmd.Flags().GetString("description")
-			input["description"] = strings.ReplaceAll(description, `\n`, "\n")
+			description, _ = cmd.Flags().GetString("description")
+			description = strings.ReplaceAll(description, `\n`, "\n")
+		}
+
+		if len(imagePaths) > 0 {
+			if !jsonOut && !plaintext {
+				fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
+			}
+
+			for _, imagePath := range imagePaths {
+				assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
+				if err != nil {
+					output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
+					os.Exit(1)
+				}
+
+				// Inject image into description
+				altText := filepath.Base(imagePath)
+				description = files.InjectImageIntoMarkdown(description, assetURL, altText)
+
+				if !jsonOut && !plaintext {
+					fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
+				}
+			}
+		}
+
+		// Set description if it was changed or if images were uploaded
+		if cmd.Flags().Changed("description") || len(imagePaths) > 0 {
+			input["description"] = description
 		}
 
 		// Handle assignee update
@@ -1346,41 +1375,6 @@ Examples:
 						foundUser = &user
 						break
 					}
-
-	// Handle image uploads
-	imagePaths, _ := cmd.Flags().GetStringArray("image")
-	description := ""
-	if cmd.Flags().Changed("description") {
-		description, _ = cmd.Flags().GetString("description")
-		description = strings.ReplaceAll(description, `\n`, "\n")
-	}
-
-	if len(imagePaths) > 0 {
-		if !jsonOut && !plaintext {
-			fmt.Printf("Uploading %d image(s)...\n", len(imagePaths))
-		}
-
-		for _, imagePath := range imagePaths {
-			assetURL, err := client.UploadFileToLinear(context.Background(), imagePath)
-			if err != nil {
-				output.Error(fmt.Sprintf("Failed to upload image %s: %v", imagePath, err), plaintext, jsonOut)
-				os.Exit(1)
-			}
-
-			// Inject image into description
-			altText := filepath.Base(imagePath)
-			description = files.InjectImageIntoMarkdown(description, assetURL, altText)
-
-			if !jsonOut && !plaintext {
-				fmt.Printf("  ✓ Uploaded: %s\n", filepath.Base(imagePath))
-			}
-		}
-	}
-
-	// Set description if it was changed or if images were uploaded
-	if cmd.Flags().Changed("description") || len(imagePaths) > 0 {
-		input["description"] = description
-	}
 				}
 
 				if foundUser == nil {
